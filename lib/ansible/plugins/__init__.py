@@ -466,6 +466,13 @@ module_loader = PluginLoader(
     'library',
 )
 
+module_utils_loader = PluginLoader(
+    'module_utils',
+    'ansible.module_utils',
+    'module_utils',
+    'module_utils',
+)
+
 lookup_loader = PluginLoader(
     'LookupModule',
     'ansible.plugins.lookup',
