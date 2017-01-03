@@ -27,32 +27,35 @@ import datetime
 from ansible.errors import AnsibleConnectionFailure
 from ansible.module_utils.six.moves import StringIO
 from ansible.plugins import terminal_loader
+from ansible.plugins.connection import ensure_connect
 from ansible.plugins.connection.paramiko_ssh import Connection as _Connection
+
+try:
+    from __main__ import display
+except ImportError:
+    from ansible.utils.display import Display
+    display = Display()
 
 
 class Connection(_Connection):
-    ''' CLI SSH based connections on Paramiko '''
+    ''' CLI (shell) SSH connections on Paramiko '''
 
     transport = 'network_cli'
     has_pipelining = False
+    action_handler = 'network'
 
     def __init__(self, play_context, new_stdin, *args, **kwargs):
         super(Connection, self).__init__(play_context, new_stdin, *args, **kwargs)
 
-        assert self._play_context.network_os, 'ansible_network_os must be set'
-
-        self._terminal = terminal_loader.get(self._play_context.network_os, self)
-        if not self._terminal:
-            raise AnsibleConnectionFailure('network os %s is not supported' % self._play_context.network_os)
-
+        self._terminal = None
         self._shell = None
-
         self._matched_prompt = None
         self._matched_pattern = None
         self._last_response = None
         self._history = list()
 
     def update_play_context(self, play_context):
+        """Updates the play context information for the connection"""
         if self._play_context.become is False and play_context.become is True:
             auth_pass = play_context.become_pass
             self._terminal.on_authorize(passwd=auth_pass)
@@ -63,10 +66,31 @@ class Connection(_Connection):
         self._play_context = play_context
 
     def _connect(self):
+        """Connections to the device and sets the terminal type"""
         super(Connection, self)._connect()
+
+        network_os = self._play_context.network_os
+        if not network_os:
+            for cls in terminal_loader.all(class_only=True):
+                network_os = cls.guess_network_os(self.ssh)
+                if network_os:
+                    break
+
+        if not network_os:
+            raise AnsibleConnectionFailure(
+                'unable to determine device network os.  Please configure '
+                'ansible_network_os value'
+            )
+
+        self._terminal = terminal_loader.get(network_os, self)
+        if not self._terminal:
+            raise AnsibleConnectionFailure('network os %s is not supported' % network_os)
+
         return (0, 'connected', '')
 
-    def open_shell(self, timeout=10):
+    @ensure_connect
+    def open_shell(self):
+        """Opens the vty shell on the connection"""
         self._shell = self.ssh.invoke_shell()
         self._shell.settimeout(self._play_context.timeout)
 
@@ -75,16 +99,17 @@ class Connection(_Connection):
         if self._shell:
             self._terminal.on_open_shell()
 
-        if hasattr(self._play_context, 'become'):
-            if self._play_context.become:
-                auth_pass = self._play_context.become_pass
-                self._terminal.on_authorize(passwd=auth_pass)
+        if getattr(self._play_context, 'become', None):
+            auth_pass = self._play_context.become_pass
+            self._terminal.on_authorize(passwd=auth_pass)
 
     def close(self):
+        display.vvv('closing connection', host=self._play_context.remote_addr)
         self.close_shell()
         super(Connection, self).close()
 
     def close_shell(self):
+        """Closes the vty shell if the device supports multiplexing"""
         if self._shell:
             self._terminal.on_close_shell()
 
@@ -95,6 +120,7 @@ class Connection(_Connection):
         return (0, 'shell closed', '')
 
     def receive(self, obj=None):
+        """Handles receiving of output from command"""
         recv = StringIO()
         handled = False
 
@@ -104,7 +130,8 @@ class Connection(_Connection):
             data = self._shell.recv(256)
 
             recv.write(data)
-            recv.seek(recv.tell() - 256)
+            offset = recv.tell() - 256 if recv.tell() > 256 else 0
+            recv.seek(offset)
 
             window = self._strip(recv.read())
 
@@ -117,6 +144,7 @@ class Connection(_Connection):
                 return self._sanitize(resp, obj)
 
     def send(self, obj):
+        """Sends the command to the device in the opened shell"""
         try:
             command = obj['command']
             self._history.append(command)
@@ -126,11 +154,13 @@ class Connection(_Connection):
             raise AnsibleConnectionFailure("timeout trying to send command: %s" % command.strip())
 
     def _strip(self, data):
+        """Removes ANSI codes from device response"""
         for regex in self._terminal.ansi_re:
             data = regex.sub('', data)
         return data
 
     def _handle_prompt(self, resp, obj):
+        """Matches the command prompt and responds"""
         prompt = re.compile(obj['prompt'], re.I)
         answer = obj['answer']
         match = prompt.search(resp)
@@ -139,6 +169,7 @@ class Connection(_Connection):
             return True
 
     def _sanitize(self, resp, obj=None):
+        """Removes elements from the response before returning to the caller"""
         cleaned = []
         command = obj.get('command') if obj else None
         for line in resp.splitlines():
@@ -148,6 +179,7 @@ class Connection(_Connection):
         return str("\n".join(cleaned)).strip()
 
     def _find_prompt(self, response):
+        """Searches the buffered response for a matching command prompt"""
         for regex in self._terminal.terminal_errors_re:
             if regex.search(response):
                 raise AnsibleConnectionFailure(response)
@@ -160,10 +192,28 @@ class Connection(_Connection):
                 return True
 
     def alarm_handler(self, signum, frame):
+        """Alarm handler raised in case of command timeout """
         self.close_shell()
 
     def exec_command(self, cmd):
-        ''' {'command': <str>, 'prompt': <str>, 'answer': <str>} '''
+        """Executes the cmd on in the shell and returns the output
+
+        The method accepts two forms of cmd.  The first form is as a
+        string that represents the command to be executed in the shell.  The
+        second form is as a JSON string with additional keyword.
+
+        Keywords supported for cmd:
+            * command - the command string to execute
+            * prompt - the expected prompt generated by executing command
+            * response - the string to respond to the prompt with
+
+        :arg cmd: the string that represents the command to be executed
+            which can be a single command or a json encoded string
+        :returns: a tuple of (return code, stdout, stderr).  The return
+            code is an integer and stdout and stderr are strings
+        """
+        # TODO: add support for timeout to the cmd to handle non return
+        # commands such as a system restart
 
         try:
             obj = json.loads(cmd)

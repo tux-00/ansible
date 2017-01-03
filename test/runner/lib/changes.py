@@ -10,6 +10,7 @@ from lib.util import (
     SubprocessError,
     MissingEnvironmentVariable,
     CommonConfig,
+    display,
 )
 
 from lib.http import (
@@ -71,7 +72,12 @@ class ShippableChanges(object):
         else:
             merge_runs = self.get_merge_runs(self.project_id, self.branch)
             last_successful_commit = self.get_last_successful_commit(merge_runs)
-            self.paths = sorted(git.get_diff_names([last_successful_commit, self.commit]))
+
+            if last_successful_commit:
+                self.paths = sorted(git.get_diff_names([last_successful_commit, self.commit]))
+            else:
+                # tracked files (including unchanged)
+                self.paths = sorted(git.get_file_names(['--cached']))
 
     def get_merge_runs(self, project_id, branch):
         """
@@ -92,9 +98,13 @@ class ShippableChanges(object):
     @staticmethod
     def get_last_successful_commit(merge_runs):
         """
-        :type merge_runs: list[dict]
+        :type merge_runs: dict | list[dict]
         :rtype: str
         """
+        if 'id' in merge_runs and merge_runs['id'] == 4004:
+            display.warning('Unable to find project. Cannot determine changes. All tests will be executed.')
+            return None
+
         merge_runs = sorted(merge_runs, key=lambda r: r['createdAt'])
         known_commits = set()
         last_successful_commit = None

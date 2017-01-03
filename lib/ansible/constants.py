@@ -56,7 +56,31 @@ def shell_expand(path, expand_relative_paths=False):
     return path
 
 def get_config(p, section, key, env_var, default, value_type=None, expand_relative_paths=False):
-    ''' return a configuration variable with casting '''
+    ''' return a configuration variable with casting
+
+    :arg p: A ConfigParser object to look for the configuration in
+    :arg section: A section of the ini config that should be examined for this section.
+    :arg key: The config key to get this config from
+    :arg env_var: An Environment variable to check for the config var.  If
+        this is set to None then no environment variable will be used.
+    :arg default: A default value to assign to the config var if nothing else sets it.
+    :kwarg value_type: The type of the value.  This can be any of the following strings:
+        :boolean: sets the value to a True or False value
+        :integer: Sets the value to an integer or raises a ValueType error
+        :float: Sets the value to a float or raises a ValueType error
+        :list: Treats the value as a comma separated list.  Split the value
+            and return it as a python list.
+        :none: Sets the value to None
+        :path: Expands any environment variables and tilde's in the value.
+        :tmp_path: Create a unique temporary directory inside of the directory
+            specified by value and return its path.
+        :pathlist: Treat the value as a typical PATH string.  (On POSIX, this
+            means colon separated strings.)  Split the value and then expand
+            each part for environment variables and tildes.
+    :kwarg expand_relative_paths: for pathlist and path types, if this is set
+        to True then also change any relative paths into absolute paths.  The
+        default is False.
+    '''
     value = _get_config(p, section, key, env_var, default)
     if value_type == 'boolean':
         value = mk_boolean(value)
@@ -77,7 +101,7 @@ def get_config(p, section, key, env_var, default, value_type=None, expand_relati
                 value = None
 
         elif value_type == 'path':
-            value = shell_expand(value)
+            value = shell_expand(value, expand_relative_paths=expand_relative_paths)
 
         elif value_type == 'tmppath':
             value = shell_expand(value)
@@ -308,9 +332,10 @@ PARAMIKO_HOST_KEY_AUTO_ADD     = get_config(p, 'paramiko_connection', 'host_key_
 PARAMIKO_PROXY_COMMAND         = get_config(p, 'paramiko_connection', 'proxy_command', 'ANSIBLE_PARAMIKO_PROXY_COMMAND', None)
 PARAMIKO_LOOK_FOR_KEYS         = get_config(p, 'paramiko_connection', 'look_for_keys', 'ANSIBLE_PARAMIKO_LOOK_FOR_KEYS', True, value_type='boolean')
 PERSISTENT_CONNECT_TIMEOUT     = get_config(p, 'persistent_connection', 'connect_timeout', 'ANSIBLE_PERSISTENT_CONNECT_TIMEOUT', 30, value_type='integer')
+PERSISTENT_CONNECT_RETRIES     = get_config(p, 'persistent_connection', 'connect_retries', 'ANSIBLE_PERSISTENT_CONNECT_RETRIES', 10, value_type='integer')
+PERSISTENT_CONNECT_INTERVAL    = get_config(p, 'persistent_connection', 'connect_interval', 'ANSIBLE_PERSISTENT_CONNECT_INTERVAL', 1, value_type='integer')
 
 # obsolete -- will be formally removed
-ZEROMQ_PORT                    = get_config(p, 'fireball_connection', 'zeromq_port', 'ANSIBLE_ZEROMQ_PORT', 5099, value_type='integer')
 ACCELERATE_PORT                = get_config(p, 'accelerate', 'accelerate_port', 'ACCELERATE_PORT', 5099, value_type='integer')
 ACCELERATE_TIMEOUT             = get_config(p, 'accelerate', 'accelerate_timeout', 'ACCELERATE_TIMEOUT', 30, value_type='integer')
 ACCELERATE_CONNECT_TIMEOUT     = get_config(p, 'accelerate', 'accelerate_connect_timeout', 'ACCELERATE_CONNECT_TIMEOUT', 1.0, value_type='float')
@@ -348,8 +373,8 @@ COLOR_DIFF_LINES  = get_config(p, 'colors', 'diff_lines', 'ANSIBLE_COLOR_DIFF_LI
 DIFF_CONTEXT = get_config(p, 'diff', 'context', 'ANSIBLE_DIFF_CONTEXT', 3, value_type='integer')
 
 # non-configurable things
-MODULE_REQUIRE_ARGS       = ['command', 'win_command', 'shell', 'win_shell', 'raw', 'script']
-MODULE_NO_JSON            = ['command', 'win_command', 'shell', 'win_shell', 'raw']
+MODULE_REQUIRE_ARGS       = ['command', 'win_command', 'net_command', 'shell', 'win_shell', 'raw', 'script']
+MODULE_NO_JSON            = ['command', 'win_command', 'net_command', 'shell', 'win_shell', 'raw']
 DEFAULT_BECOME_PASS       = None
 DEFAULT_PASSWORD_CHARS = to_text(ascii_letters + digits + ".,:-_", errors='strict')  # characters included in auto-generated passwords
 DEFAULT_SUDO_PASS         = None

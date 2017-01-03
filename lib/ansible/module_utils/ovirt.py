@@ -19,6 +19,7 @@
 #
 
 import inspect
+import os
 import time
 
 from abc import ABCMeta, abstractmethod
@@ -28,7 +29,6 @@ from enum import Enum
 
 try:
     import ovirtsdk4 as sdk
-    import ovirtsdk4.types as otypes
     import ovirtsdk4.version as sdk_version
     HAS_SDK = LooseVersion(sdk_version.VERSION) >= LooseVersion('4.0.0')
 except ImportError:
@@ -51,7 +51,7 @@ def check_sdk(module):
         )
 
 
-def get_dict_of_struct(struct):
+def get_dict_of_struct(struct, connection=None, fetch_nested=False, attributes=None):
     """
     Convert SDK Struct type into dictionary.
     """
@@ -64,18 +64,32 @@ def get_dict_of_struct(struct):
     res = {}
     if struct is not None:
         for key, value in struct.__dict__.items():
+            nested = False
             key = remove_underscore(key)
             if value is None:
                 continue
+
             elif isinstance(value, sdk.Struct):
                 res[key] = get_dict_of_struct(value)
             elif isinstance(value, Enum) or isinstance(value, datetime):
                 res[key] = str(value)
-            elif isinstance(value, list):
+            elif isinstance(value, list) or isinstance(value, sdk.List):
+                if isinstance(value, sdk.List) and fetch_nested and value.href:
+                    value = connection.follow_link(value)
+                    nested = True
+
                 res[key] = []
                 for i in value:
                     if isinstance(i, sdk.Struct):
-                        res[key].append(get_dict_of_struct(i))
+                        if not nested:
+                            res[key].append(get_dict_of_struct(i))
+                        else:
+                            nested_obj = dict(
+                                (attr, getattr(i, attr))
+                                for attr in attributes if getattr(i, attr, None)
+                            )
+                            nested_obj['id'] = getattr(i, 'id', None),
+                            res[key].append(nested_obj)
                     elif isinstance(i, Enum):
                         res[key].append(str(i))
                     else:
@@ -111,6 +125,7 @@ def create_connection(auth):
         token=auth.get('token', None),
         kerberos=auth.get('kerberos', None),
     )
+
 
 def convert_to_bytes(param):
     """
@@ -195,7 +210,7 @@ def search_by_attributes(service, **kwargs):
     else:
         res = [
             e for e in service.list() if len([
-                 k for k, v in kwargs.items() if getattr(e, k, None) == v
+                k for k, v in kwargs.items() if getattr(e, k, None) == v
             ]) == len(kwargs)
         ]
 
@@ -265,6 +280,49 @@ def wait(
             time.sleep(float(poll_interval))
 
 
+def __get_auth_dict():
+    OVIRT_URL = os.environ.get('OVIRT_URL')
+    OVIRT_USERNAME = os.environ.get('OVIRT_USERNAME')
+    OVIRT_PASSWORD = os.environ.get('OVIRT_PASSWORD')
+    OVIRT_TOKEN = os.environ.get('OVIRT_TOKEN')
+    OVIRT_CAFILE = os.environ.get('OVIRT_CAFILE')
+    OVIRT_INSECURE = OVIRT_CAFILE is None
+
+    env_vars = None
+    if OVIRT_URL and ((OVIRT_USERNAME and OVIRT_PASSWORD) or OVIRT_TOKEN):
+        env_vars = {
+            'url': OVIRT_URL,
+            'username': OVIRT_USERNAME,
+            'password': OVIRT_PASSWORD,
+            'insecure': OVIRT_INSECURE,
+            'token': OVIRT_TOKEN,
+            'ca_file': OVIRT_CAFILE,
+        }
+    if env_vars is not None:
+        auth = dict(default=env_vars, type='dict')
+    else:
+        auth = dict(required=True, type='dict')
+
+    return auth
+
+
+def ovirt_facts_full_argument_spec(**kwargs):
+    """
+    Extend parameters of facts module with parameters which are common to all
+    oVirt facts modules.
+
+    :param kwargs: kwargs to be extended
+    :return: extended dictionary with common parameters
+    """
+    spec = dict(
+        auth=__get_auth_dict(),
+        fetch_nested=dict(default=False, type='bool'),
+        nested_attributes=dict(type='list'),
+    )
+    spec.update(kwargs)
+    return spec
+
+
 def ovirt_full_argument_spec(**kwargs):
     """
     Extend parameters of module with parameters which are common to all oVirt modules.
@@ -273,10 +331,12 @@ def ovirt_full_argument_spec(**kwargs):
     :return: extended dictionary with common parameters
     """
     spec = dict(
-        auth=dict(required=True, type='dict'),
+        auth=__get_auth_dict(),
         timeout=dict(default=180, type='int'),
         wait=dict(default=True, type='bool'),
         poll_interval=dict(default=3, type='int'),
+        fetch_nested=dict(default=False, type='bool'),
+        nested_attributes=dict(type='list'),
     )
     spec.update(kwargs)
     return spec
@@ -427,7 +487,12 @@ class BaseModule(object):
         return {
             'changed': self.changed,
             'id': entity.id,
-            type(entity).__name__.lower(): get_dict_of_struct(entity),
+            type(entity).__name__.lower(): get_dict_of_struct(
+                struct=entity,
+                connection=self._connection,
+                fetch_nested=self._module.params.get('fetch_nested'),
+                attributes=self._module.params.get('nested_attributes'),
+            ),
         }
 
     def pre_remove(self, entity):
@@ -479,7 +544,12 @@ class BaseModule(object):
         return {
             'changed': self.changed,
             'id': entity.id,
-            type(entity).__name__.lower(): get_dict_of_struct(entity),
+            type(entity).__name__.lower(): get_dict_of_struct(
+                struct=entity,
+                connection=self._connection,
+                fetch_nested=self._module.params.get('fetch_nested'),
+                attributes=self._module.params.get('nested_attributes'),
+            ),
         }
 
     def action(
@@ -549,7 +619,12 @@ class BaseModule(object):
         return {
             'changed': self.changed,
             'id': entity.id,
-            type(entity).__name__.lower(): get_dict_of_struct(entity),
+            type(entity).__name__.lower(): get_dict_of_struct(
+                struct=entity,
+                connection=self._connection,
+                fetch_nested=self._module.params.get('fetch_nested'),
+                attributes=self._module.params.get('nested_attributes'),
+            ),
         }
 
     def search_entity(self, search_params=None):

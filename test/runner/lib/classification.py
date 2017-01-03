@@ -9,6 +9,7 @@ from lib.target import (
     walk_integration_targets,
     walk_units_targets,
     walk_compile_targets,
+    walk_sanity_targets,
 )
 
 from lib.util import (
@@ -76,10 +77,12 @@ class PathMapper(object):
         self.module_targets = list(walk_module_targets())
         self.compile_targets = list(walk_compile_targets())
         self.units_targets = list(walk_units_targets())
+        self.sanity_targets = list(walk_sanity_targets())
 
         self.compile_paths = set(t.path for t in self.compile_targets)
         self.units_modules = set(t.module for t in self.units_targets if t.module)
-        self.units_paths = set(t.path for t in self.units_targets)
+        self.units_paths = set(a for t in self.units_targets for a in t.aliases)
+        self.sanity_paths = set(t.path for t in self.sanity_targets)
 
         self.module_names_by_path = dict((t.path, t.module) for t in self.module_targets)
         self.integration_targets_by_name = dict((t.name, t) for t in self.integration_targets)
@@ -107,7 +110,7 @@ class PathMapper(object):
             result['compile'] = path
 
         # run sanity on path unless result specified otherwise
-        if 'sanity' not in result:
+        if path in self.sanity_paths and 'sanity' not in result:
             result['sanity'] = path
 
         return result
@@ -183,25 +186,43 @@ class PathMapper(object):
                     'units': 'test/units/plugins/connection/',
                 }
 
+            units_path = 'test/units/plugins/connection/test_%s.py' % name
+
+            if units_path not in self.units_paths:
+                units_path = None
+
+            integration_name = 'connection_%s' % name
+
+            if integration_name not in self.integration_targets_by_name:
+                integration_name = None
+
+            # entire integration test commands depend on these connection plugins
+
             if name == 'winrm':
                 return {
                     'windows-integration': 'all',
-                    'units': 'test/units/plugins/connection/',
+                    'units': units_path,
                 }
 
             if name == 'local':
                 return {
                     'integration': 'all',
                     'network-integration': 'all',
-                    'units': 'test/units/plugins/connections/',
+                    'units': units_path,
                 }
 
-            if 'connection_%s' % name in self.integration_targets_by_name:
+            if name == 'network_cli':
                 return {
-                    'integration': 'connection_%s' % name,
+                    'network-integration': 'all',
+                    'units': units_path,
                 }
 
-            return minimal
+            # other connection plugins have isolated integration and unit tests
+
+            return {
+                'integration': integration_name,
+                'units': units_path,
+            }
 
         if path.startswith('lib/ansible/utils/module_docs_fragments/'):
             return {
@@ -248,9 +269,6 @@ class PathMapper(object):
                 'network-integration': 'all',
             }
 
-        if path.startswith('test/samples/'):
-            return minimal
-
         if path.startswith('test/sanity/'):
             return {
                 'sanity': 'all',  # test infrastructure, run all sanity checks
@@ -262,9 +280,17 @@ class PathMapper(object):
                     'units': path,
                 }
 
-            return {
-                'units': os.path.dirname(path),
-            }
+            # changes to files which are not unit tests should trigger tests from the nearest parent directory
+
+            test_path = os.path.dirname(path)
+
+            while test_path:
+                if test_path + '/' in self.units_paths:
+                    return {
+                        'units': test_path + '/',
+                    }
+
+                test_path = os.path.dirname(test_path)
 
         if path.startswith('test/runner/'):
             return all_tests()  # test infrastructure, run all tests

@@ -39,7 +39,7 @@ Tasks and plays both use the `include` keyword, but implement the keyword differ
     # this is a 'play' include
     - include: listofplays
 
-    - name: antoher play
+    - name: another play
       hosts: all
       tasks:
         - debug: msg=hello
@@ -165,7 +165,7 @@ inside another.
 .. _dynamic_static:
 
 Dynamic versus Static Includes
-```````````````````````````
+``````````````````````````````
 
 In Ansible 2.0 there were changes on how 'task' includes are processed. The 'play' includes are still 'static' or unchanged.
 
